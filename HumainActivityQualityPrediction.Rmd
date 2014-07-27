@@ -1,0 +1,139 @@
+---
+title: "Prediction of human activity quality"
+author: "A.N."
+date: "Sunday, July 27, 2014"
+output: html_document
+---
+
+```{r echo=FALSE,results='hide'}
+require(caret)
+require(doParallel)
+
+# Allow parallel processing
+cl<-makeCluster(detectCores())
+registerDoParallel(cl)
+```
+
+## The data
+The data used for this exercise come from the Human Activity Recognition, only a subset of it is used.
+
+In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Data-set). 
+
+```{r}
+pmlTrain <- read.csv("pml-training.csv",na.strings = c("NA","#DIV/0!"))
+pmlTest <- read.csv("pml-testing.csv", na.strings =  c("NA","#DIV/0!"))
+```
+
+
+
+## Pre processing
+
+We need to clean the data first. That means replace all NA by 0.
+
+```{r}
+pmlTrain[is.na(pmlTrain)] <-0
+pmlTest[is.na(pmlTest)] <-0
+```
+
+### variables reduction
+The data-set contains 160 variables. It's important to reduce the number of variables to find the best predictors for the variables **classes**.
+
+First let's remove the columns related to time stamps, the unique identifier (**X**), the user name and the num_window as those columns cannot be used as predictors. 
+Also the columns representing a total will not improve the model.
+
+```{r}
+#remove timestamp and X and num_window
+pmlTrain <- pmlTrain[,-c(grep("X",names(pmlTrain)),
+                         grep("num_window",names(pmlTrain)),
+                         grep("user_name",names(pmlTrain)),
+                         grep("total",names(pmlTrain)),
+                         grep("_timestamp",names(pmlTrain)))]
+```
+
+Then a easy win will be to exclude all the columns where the median is equal to 0. 
+
+**Note: We could also check that the first quantile is also equal to 0 in order to improve this filtering **
+
+```{r}
+# remove columns Where median is 0
+tmp<- apply(pmlTrain[,sapply(pmlTrain, is.numeric)],2,median)
+pmlTrain <- pmlTrain[ ,c(!names(pmlTrain) %in% names(tmp[which(tmp==0)]))]
+```
+
+With this simple cleaning process, we reduce the number of variable from 160 to 46.
+
+### Partition the training data frame 
+Let use 75% of the training set to train the model and keep the rest to verify the predictive power of the model
+```{r}
+inTrain <- createDataPartition(y=pmlTrain$classe,p=0.75,list=F)
+training <- pmlTrain[inTrain,]
+testing <-  pmlTrain[-inTrain,]
+```
+
+For better result when we train the model it's important to exclude correlated variables. So let's remove from the data that will be use to train the model the correlated variables.
+
+```{r}
+# remove  highly corrolated columns
+nums <- sapply(training, is.numeric)
+columnsHighlyCorr <-  findCorrelation(cor(training[,nums]),0.70,verbose=F)
+training <- training[,-c(columnsHighlyCorr)]
+```
+
+Variables with small standard deviation will not have a high predictive power so they will be discard
+
+```{r}
+# Remove variable with smal SD
+training<-training[,-which(apply(training[,sapply(training, is.numeric)],2,sd)<10)]
+```
+Now we have only 20 variables left.
+
+## Train the model
+Now we can start training our model and try to predict the variable **classe**
+To train the model, a random forest will be used and we will apply a cross validation process with 4 folds.
+
+```{r results='hide'}
+# Start the training
+set.seed(1245)
+ctrl <- trainControl(method="cv", number=4)
+rfFit <- train(classe~.,method="rf",data=training,trControl =ctrl)
+```
+
+### Accuracy
+
+```{r echo=FALSE}
+ggplot(rfFit)
+```
+
+As it's possible to see on this graphic below, the model has a higher accuracy with 12 predictors.
+
+### top 10 predictors
+The top 10 predictors are the following
+
+```{r echo=FALSE}
+plot(varImp(rfFit),top=10)
+```
+
+## Verify the model
+
+A simple method will be used to check if the classification defined by the predictive model was accurate compare to the test set.
+This function returns the ratio of wrong prediction relative to the number of rows from the test set.
+```{r}
+missClass = function(values,prediction){sum(prediction!= values)/length(values)}
+```
+Let check the model against the testing set
+```{r}
+#Check the predictions
+set.seed(456)
+missClass(testing$classe,predict(rfFit, testing))
+```
+There is less than 1.5% of misclassification with the testing set.
+
+
+We can apply our model to the out of sample set
+```{r}
+predict(rfFit, newdata=pmlTest)
+```
+The expected values are : B A B A A E D B A A B C B A E E A B B B
+
